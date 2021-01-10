@@ -7,9 +7,9 @@ const net = std.net;
 const os = std.os;
 const time = std.time;
 
-const max_clients = 1;
-const delay = 1000;
-const port = 54650;
+const max_clients = 4096;
+const delay = 10000;
+const port = 22;
 
 const Session = struct {
     addr: net.Address,
