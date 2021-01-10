@@ -173,10 +173,17 @@ pub fn main() anyerror!void {
                 max_clients,
             });
 
-            var socket_writer = .{ .context = client_fd };
-
             const now2 = time.milliTimestamp();
 
+            // Set the smallest possible receive buffer.
+            try os.setsockopt(
+                client_fd,
+                os.SOL_SOCKET,
+                os.SO_RCVBUF,
+                &mem.toBytes(@as(c_int, 1)),
+            );
+
+            var socket_writer = .{ .context = client_fd };
             var session = Session{
                 .addr = client_addr,
                 .socket = client_fd,
