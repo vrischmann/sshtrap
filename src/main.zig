@@ -52,7 +52,11 @@ fn createServer() !os.socket_t {
 }
 
 fn socketWrite(fd: os.socket_t, bytes: []const u8) os.WriteError!usize {
-    return os.write(fd, bytes);
+    const rc = os.linux.write(fd, bytes.ptr, bytes.len);
+    return switch (os.errno(rc)) {
+        0 => @intCast(usize, rc),
+        else => error.BrokenPipe,
+    };
 }
 const SocketWriter = io.Writer(os.socket_t, os.WriteError, socketWrite);
 
