@@ -43,7 +43,7 @@ fn createServer() !os.socket_t {
         &mem.toBytes(@as(c_int, 0)),
     );
 
-    const addr = try net.Address.parseIp6("::1", port);
+    const addr = try net.Address.parseIp6("::0", port);
 
     try os.bind(sockfd, &addr.any, @sizeOf(os.sockaddr_in6));
     try os.listen(sockfd, std.math.maxInt(u31));
