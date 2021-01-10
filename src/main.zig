@@ -115,9 +115,6 @@ pub fn main() anyerror!void {
                 _ = sessions.orderedRemove(i);
                 if (i > 0) i -= 1;
 
-                // Cleanup
-                os.close(session.socket);
-
                 continue;
             };
 
