@@ -39,7 +39,7 @@ fn createServer() !os.socket_t {
     try os.setsockopt(
         sockfd,
         os.IPPROTO_IPV6,
-        26, // TODO(vincent): this is IPV6_V6ONLY but it's not defined yet in Zig's stdlib
+        os.linux.IPV6_V6ONLY,
         &mem.toBytes(@as(c_int, 0)),
     );
 
