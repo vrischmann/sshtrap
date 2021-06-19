@@ -26,6 +26,7 @@ const Session = struct {
 
 fn createServer() !os.socket_t {
     const sockfd = try os.socket(os.AF_INET6, os.SOCK_STREAM, 0);
+    errdefer os.close(sockfd);
 
     // Enable reuseaddr if possible
     os.setsockopt(
