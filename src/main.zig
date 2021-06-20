@@ -106,7 +106,7 @@ pub fn main() anyerror!void {
             var message_buffer: [32]u8 = undefined;
             rng.random.bytes(&message_buffer);
 
-            session.socket_writer.writeAll(&message_buffer) catch |err| {
+            session.socket_writer.print("{s}", .{std.fmt.fmtSliceHexLower(&message_buffer)}) catch |err| {
                 logger.info("CLOSE host={} port={} fd={} elapsed={d:.3} bytes={} error={}", .{
                     session.addr,
                     session.addr.getPort(),
