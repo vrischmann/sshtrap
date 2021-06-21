@@ -305,6 +305,8 @@ pub fn main() anyerror!void {
 
                     // Enqueue a timeout request for the first write.
                     try connection.prep_timeout(&ring, delay * std.time.ns_per_ms);
+                    // Enqueue a new recv request for the banner
+                    try connection.prep_recv(&ring);
                     // Enqueue a new accept request.
                     try accept_completion.prep();
                 },
@@ -314,9 +316,27 @@ pub fn main() anyerror!void {
                     // handle errors
                     if (cqe.res <= 0) {
                         switch (-cqe.res) {
-                            os.EPIPE => logger.info("RECV fd={} broken pipe", .{connection.socket}),
-                            0 => logger.info("RECV fd={} end of file", .{connection.socket}),
-                            else => logger.warn("RECV fd={} errno {d}", .{ connection.socket, cqe.res }),
+                            os.EPIPE => logger.info("RECV host={} port={} fd={} broken pipe", .{
+                                connection.addr,
+                                connection.addr.getPort(),
+                                op.socket,
+                            }),
+                            os.ECONNRESET => logger.info("RECV host={} port={} fd={} reset by peer pipe", .{
+                                connection.addr,
+                                connection.addr.getPort(),
+                                op.socket,
+                            }),
+                            0 => logger.info("RECV host={} port={} fd={} end of file", .{
+                                connection.addr,
+                                connection.addr.getPort(),
+                                op.socket,
+                            }),
+                            else => logger.warn("RECV host={} port={} fd={} errno {d}", .{
+                                connection.addr,
+                                connection.addr.getPort(),
+                                op.socket,
+                                cqe.res,
+                            }),
                         }
                         try connection.prep_close(&ring);
                         continue;
