@@ -288,6 +288,10 @@ pub fn main() anyerror!void {
                         }
                     } else {
                         logger.warn("no free connection available", .{});
+
+                        // Enqueue a new accept request.
+                        try accept_completion.prep();
+
                         continue;
                     };
                     connection.addr = net.Address{ .any = op.addr };
