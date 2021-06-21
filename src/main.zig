@@ -1,5 +1,6 @@
 const std = @import("std");
 const debug = std.debug;
+const fmt = std.fmt;
 const heap = std.heap;
 const io = std.io;
 const mem = std.mem;
@@ -349,9 +350,9 @@ pub fn main() anyerror!void {
                         connection.addr,
                         connection.addr.getPort(),
                         connection.socket,
-                        std.fmt.fmtSliceHexLower(data),
-                        mem.trimRight(u8, data, "\r\n"),
-                        std.fmt.fmtIntSizeBin(data.len),
+                        fmt.fmtSliceHexLower(data),
+                        fmt.fmtSliceEscapeLower(data),
+                        fmt.fmtIntSizeBin(data.len),
                     });
 
                     try connection.prep_recv(&ring);
@@ -392,7 +393,7 @@ pub fn main() anyerror!void {
                         connection.addr,
                         connection.addr.getPort(),
                         op.socket,
-                        std.fmt.fmtIntSizeBin(@intCast(u64, cqe.res)),
+                        fmt.fmtIntSizeBin(@intCast(u64, cqe.res)),
                     });
 
                     // Enqueue a timeout request for the next write.
@@ -419,10 +420,10 @@ pub fn main() anyerror!void {
                         var banner_buffer: [4]u8 = undefined;
                         rng.random.bytes(&banner_buffer);
 
-                        break :blk try std.fmt.bufPrint(
+                        break :blk try fmt.bufPrint(
                             connection.buffer,
                             "{s}",
-                            .{std.fmt.fmtSliceHexLower(&banner_buffer)},
+                            .{fmt.fmtSliceHexLower(&banner_buffer)},
                         );
                     };
 
