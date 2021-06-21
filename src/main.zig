@@ -25,6 +25,11 @@ const Completion = struct {
     operation: Operation,
 
     fn prep(self: *Self) !void {
+        logger.debug("prep {s} user data={d}", .{
+            fmt.fmtSliceEscapeUpper(@tagName(self.operation)),
+            @ptrToInt(self),
+        });
+
         switch (self.operation) {
             .accept => |*op| {
                 _ = try self.ring.accept(
@@ -96,8 +101,8 @@ const Connection = struct {
 
     state: enum {
         free,
-        accepting,
         connected,
+        terminating,
     } = .free,
 
     recv_completion: Completion = undefined,
@@ -106,7 +111,7 @@ const Connection = struct {
 
     addr: net.Address = net.Address{
         .any = .{
-            .family = os.AF_INET6,
+            .family = os.AF_INET,
             .data = [_]u8{0} ** 14,
         },
     },
@@ -300,7 +305,7 @@ pub fn main() anyerror!void {
                     // If no connection is free we don't do anything.
                     var connection = for (connections) |*conn| {
                         if (conn.state == .free) {
-                            conn.state = .accepting;
+                            conn.state = .connected;
                             break conn;
                         }
                     } else {
@@ -328,7 +333,7 @@ pub fn main() anyerror!void {
                     try accept_completion.prep();
                 },
                 .recv => |*op| {
-                    const connection = @fieldParentPtr(Connection, "recv_completion", completion);
+                    var connection = @fieldParentPtr(Connection, "recv_completion", completion);
 
                     // handle errors
                     if (cqe.res <= 0) {
@@ -355,7 +360,7 @@ pub fn main() anyerror!void {
                                 cqe.res,
                             }),
                         }
-                        try connection.prep_close(&ring);
+                        connection.state = .terminating;
                         continue;
                     }
 
@@ -374,7 +379,7 @@ pub fn main() anyerror!void {
                     try connection.prep_recv(&ring);
                 },
                 .send => |*op| {
-                    const connection = @fieldParentPtr(Connection, "send_completion", completion);
+                    var connection = @fieldParentPtr(Connection, "send_completion", completion);
 
                     // handle errors
                     if (cqe.res <= 0) {
@@ -401,7 +406,7 @@ pub fn main() anyerror!void {
                                 cqe.res,
                             }),
                         }
-                        try connection.prep_close(&ring);
+                        connection.state = .terminating;
                         continue;
                     }
 
@@ -443,8 +448,13 @@ pub fn main() anyerror!void {
                         );
                     };
 
-                    // Enqueue a send request
-                    try connection.prep_send(&ring, banner);
+                    if (connection.state == .terminating) {
+                        // Enqueue a close request
+                        try connection.prep_close(&ring);
+                    } else {
+                        // Enqueue a send request
+                        try connection.prep_send(&ring, banner);
+                    }
                 },
             }
         }
