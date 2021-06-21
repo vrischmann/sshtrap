@@ -11,11 +11,12 @@ const time = std.time;
 const IO_Uring = std.os.linux.IO_Uring;
 const io_uring_cqe = std.os.linux.io_uring_cqe;
 
+const argsParser = @import("args");
+
 const max_connections = 1024;
 const max_ring_entries = 512;
 const max_buffer_size = 4096;
 const delay = 10000;
-const port = 22;
 
 const Completion = struct {
     const Self = @This();
@@ -171,7 +172,7 @@ const Connection = struct {
     }
 };
 
-fn createServer() !os.socket_t {
+fn createServer(port: u16) !os.socket_t {
     const sockfd = try os.socket(os.AF_INET6, os.SOCK_STREAM, 0);
     errdefer os.close(sockfd);
 
@@ -211,6 +212,21 @@ pub fn main() anyerror!void {
     defer arena.deinit();
     var allocator = &arena.allocator;
 
+    // Parse options
+    const options = try argsParser.parseForCurrentProcess(struct {
+        port: u16 = 22,
+
+        pub const shorthands = .{
+            .p = "port",
+        };
+    }, allocator, .print);
+    defer options.deinit();
+
+    if (options.options.port <= 0) {
+        logger.err("invalid port {d}", .{options.options.port});
+        return error.InvalidPort;
+    }
+
     // Prepare state
     var connections = try allocator.alloc(Connection, max_connections);
     mem.set(Connection, connections, .{});
@@ -232,7 +248,7 @@ pub fn main() anyerror!void {
     os.sigaction(os.SIGPIPE, &act, null);
 
     // Create the server
-    const server_fd = try createServer();
+    const server_fd = try createServer(options.options.port);
 
     // Create the ring
 
