@@ -102,8 +102,13 @@ const Connection = struct {
     send_completion: Completion = undefined,
     timeout_completion: Completion = undefined,
 
-    addr: net.Address = undefined,
-    socket: os.socket_t = undefined,
+    addr: net.Address = net.Address{
+        .any = .{
+            .family = os.AF_INET6,
+            .data = [_]u8{0} ** 14,
+        },
+    },
+    socket: os.socket_t = -1,
     buffer: []u8 = undefined,
 
     statistics: struct {
@@ -378,7 +383,10 @@ pub fn main() anyerror!void {
                         op.socket,
                     });
 
-                    // connection.* = .{};
+                    // TODO(vincent): refactor into a struct ?
+                    const buffer = connection.buffer;
+                    connection.* = .{};
+                    connection.buffer = buffer;
                 },
                 .timeout => {
                     const connection = @fieldParentPtr(Connection, "timeout_completion", completion);
