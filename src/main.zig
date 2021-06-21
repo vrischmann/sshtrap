@@ -375,8 +375,6 @@ pub fn main() anyerror!void {
                         fmt.fmtSliceEscapeLower(data),
                         fmt.fmtIntSizeBin(data.len),
                     });
-
-                    try connection.prep_recv(&ring);
                 },
                 .send => |*op| {
                     var connection = @fieldParentPtr(Connection, "send_completion", completion);
