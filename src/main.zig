@@ -333,10 +333,9 @@ pub fn main() anyerror!void {
                     connection.socket = @intCast(os.socket_t, cqe.res);
                     connection.statistics.connect_time = time.milliTimestamp();
 
-                    logger.info("ACCEPT fd={} host={} port={}", .{
+                    logger.info("ACCEPT fd={} host={}", .{
                         connection.socket,
                         connection.addr,
-                        connection.addr.getPort(),
                     });
 
                     // Enqueue a timeout request for the first write.
@@ -362,24 +361,20 @@ pub fn main() anyerror!void {
                     // handle errors
                     if (cqe.res <= 0) {
                         switch (-cqe.res) {
-                            os.EPIPE => logger.info("RECV host={} port={} fd={} broken pipe", .{
+                            os.EPIPE => logger.info("RECV host={} fd={} broken pipe", .{
                                 connection.addr,
-                                connection.addr.getPort(),
                                 op.socket,
                             }),
-                            os.ECONNRESET => logger.info("RECV host={} port={} fd={} reset by peer", .{
+                            os.ECONNRESET => logger.info("RECV host={} fd={} reset by peer", .{
                                 connection.addr,
-                                connection.addr.getPort(),
                                 op.socket,
                             }),
-                            0 => logger.info("RECV host={} port={} fd={} end of file", .{
+                            0 => logger.info("RECV host={} fd={} end of file", .{
                                 connection.addr,
-                                connection.addr.getPort(),
                                 op.socket,
                             }),
-                            else => logger.warn("RECV host={} port={} fd={} errno {d}", .{
+                            else => logger.warn("RECV host={} fd={} errno {d}", .{
                                 connection.addr,
-                                connection.addr.getPort(),
                                 op.socket,
                                 cqe.res,
                             }),
@@ -389,9 +384,8 @@ pub fn main() anyerror!void {
                         const size = @intCast(usize, cqe.res);
                         const data = connection.buffer[0..size];
 
-                        logger.info("RECV host={} port={} fd={} data={s}/{s} ({s})", .{
+                        logger.info("RECV host={} fd={} data={s}/{s} ({s})", .{
                             connection.addr,
-                            connection.addr.getPort(),
                             connection.socket,
                             fmt.fmtSliceHexLower(data),
                             fmt.fmtSliceEscapeLower(data),
@@ -405,24 +399,20 @@ pub fn main() anyerror!void {
                     // handle errors
                     if (cqe.res <= 0) {
                         switch (-cqe.res) {
-                            os.EPIPE => logger.info("SEND host={} port={} fd={} broken pipe", .{
+                            os.EPIPE => logger.info("SEND host={} fd={} broken pipe", .{
                                 connection.addr,
-                                connection.addr.getPort(),
                                 op.socket,
                             }),
-                            os.ECONNRESET => logger.info("SEND host={} port={} fd={} reset by peer", .{
+                            os.ECONNRESET => logger.info("SEND host={} fd={} reset by peer", .{
                                 connection.addr,
-                                connection.addr.getPort(),
                                 op.socket,
                             }),
-                            0 => logger.info("SEND host={} port={} fd={} end of file", .{
+                            0 => logger.info("SEND host={} fd={} end of file", .{
                                 connection.addr,
-                                connection.addr.getPort(),
                                 op.socket,
                             }),
-                            else => logger.warn("SEND host={} port={} fd={} errno {d}", .{
+                            else => logger.warn("SEND host={} fd={} errno {d}", .{
                                 connection.addr,
-                                connection.addr.getPort(),
                                 op.socket,
                                 cqe.res,
                             }),
@@ -431,9 +421,8 @@ pub fn main() anyerror!void {
                     } else {
                         connection.statistics.bytes_sent += @intCast(usize, cqe.res);
 
-                        logger.info("SEND host={} port={} fd={} data={s}", .{
+                        logger.info("SEND host={} fd={} data={s}", .{
                             connection.addr,
-                            connection.addr.getPort(),
                             op.socket,
                             fmt.fmtIntSizeBin(@intCast(u64, cqe.res)),
                         });
@@ -447,9 +436,8 @@ pub fn main() anyerror!void {
 
                     const elapsed = time.milliTimestamp() - connection.statistics.connect_time;
 
-                    logger.info("CLOSE host={} port={} fd={} total sent={s} elapsed={s}", .{
+                    logger.info("CLOSE host={} fd={} total sent={s} elapsed={s}", .{
                         connection.addr,
-                        connection.addr.getPort(),
                         op.socket,
                         fmt.fmtIntSizeBin(@intCast(u64, connection.statistics.bytes_sent)),
                         fmt.fmtDuration(@intCast(u64, elapsed * time.ns_per_ms)),
