@@ -329,6 +329,7 @@ pub fn main() anyerror!void {
                     };
                     connection.addr = net.Address{ .any = op.addr };
                     connection.socket = @intCast(os.socket_t, cqe.res);
+                    connection.statistics.connect_time = time.milliTimestamp();
 
                     logger.info("ACCEPT fd={} host={} port={}", .{
                         connection.socket,
@@ -429,6 +430,8 @@ pub fn main() anyerror!void {
                         continue;
                     }
 
+                    connection.statistics.bytes_sent += @intCast(usize, cqe.res);
+
                     logger.info("SEND host={} port={} fd={} data={s}", .{
                         connection.addr,
                         connection.addr.getPort(),
@@ -442,10 +445,14 @@ pub fn main() anyerror!void {
                 .close => |*op| {
                     var connection = @fieldParentPtr(Connection, "send_completion", completion);
 
-                    logger.info("CLOSE host={} port={} fd={}", .{
+                    const elapsed = time.milliTimestamp() - connection.statistics.connect_time;
+
+                    logger.info("CLOSE host={} port={} fd={} total sent={s} elapsed={s}", .{
                         connection.addr,
                         connection.addr.getPort(),
                         op.socket,
+                        fmt.fmtIntSizeBin(@intCast(u64, connection.statistics.bytes_sent)),
+                        fmt.fmtDuration(@intCast(u64, elapsed * time.ns_per_ms)),
                     });
 
                     // TODO(vincent): refactor into a struct ?
