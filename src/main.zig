@@ -13,10 +13,8 @@ const io_uring_cqe = std.os.linux.io_uring_cqe;
 
 const argsParser = @import("args");
 
-const max_connections = 1024;
 const max_ring_entries = 512;
 const max_buffer_size = 4096;
-const delay = 10000;
 
 const Completion = struct {
     const Self = @This();
@@ -220,9 +218,13 @@ pub fn main() anyerror!void {
     // Parse options
     const options = try argsParser.parseForCurrentProcess(struct {
         port: u16 = 22,
+        delay: i64 = 10000,
+        @"max-connections": usize = 1024,
 
         pub const shorthands = .{
             .p = "port",
+            .d = "delay",
+            .c = "max-connections",
         };
     }, allocator, .print);
     defer options.deinit();
@@ -233,7 +235,7 @@ pub fn main() anyerror!void {
     }
 
     // Prepare state
-    var connections = try allocator.alloc(Connection, max_connections);
+    var connections = try allocator.alloc(Connection, options.options.@"max-connections");
     mem.set(Connection, connections, .{});
     for (connections) |*connection| {
         connection.buffer = try allocator.alloc(u8, max_buffer_size);
@@ -338,7 +340,7 @@ pub fn main() anyerror!void {
                     });
 
                     // Enqueue a timeout request for the first write.
-                    try connection.prep_timeout(&ring, delay * std.time.ns_per_ms);
+                    try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
                     // Enqueue a new recv request for the banner
                     try connection.prep_recv(&ring);
 
@@ -383,20 +385,19 @@ pub fn main() anyerror!void {
                             }),
                         }
                         connection.state = .terminating;
-                        continue;
+                    } else {
+                        const size = @intCast(usize, cqe.res);
+                        const data = connection.buffer[0..size];
+
+                        logger.info("RECV host={} port={} fd={} data={s}/{s} ({s})", .{
+                            connection.addr,
+                            connection.addr.getPort(),
+                            connection.socket,
+                            fmt.fmtSliceHexLower(data),
+                            fmt.fmtSliceEscapeLower(data),
+                            fmt.fmtIntSizeBin(data.len),
+                        });
                     }
-
-                    const size = @intCast(usize, cqe.res);
-                    const data = connection.buffer[0..size];
-
-                    logger.info("RECV host={} port={} fd={} data={s}/{s} ({s})", .{
-                        connection.addr,
-                        connection.addr.getPort(),
-                        connection.socket,
-                        fmt.fmtSliceHexLower(data),
-                        fmt.fmtSliceEscapeLower(data),
-                        fmt.fmtIntSizeBin(data.len),
-                    });
                 },
                 .send => |*op| {
                     var connection = @fieldParentPtr(Connection, "send_completion", completion);
@@ -427,20 +428,19 @@ pub fn main() anyerror!void {
                             }),
                         }
                         connection.state = .terminating;
-                        continue;
+                    } else {
+                        connection.statistics.bytes_sent += @intCast(usize, cqe.res);
+
+                        logger.info("SEND host={} port={} fd={} data={s}", .{
+                            connection.addr,
+                            connection.addr.getPort(),
+                            op.socket,
+                            fmt.fmtIntSizeBin(@intCast(u64, cqe.res)),
+                        });
                     }
 
-                    connection.statistics.bytes_sent += @intCast(usize, cqe.res);
-
-                    logger.info("SEND host={} port={} fd={} data={s}", .{
-                        connection.addr,
-                        connection.addr.getPort(),
-                        op.socket,
-                        fmt.fmtIntSizeBin(@intCast(u64, cqe.res)),
-                    });
-
                     // Enqueue a timeout request for the next write.
-                    try connection.prep_timeout(&ring, delay * std.time.ns_per_ms);
+                    try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
                 },
                 .close => |*op| {
                     var connection = @fieldParentPtr(Connection, "send_completion", completion);
