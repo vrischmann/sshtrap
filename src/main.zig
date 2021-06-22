@@ -255,6 +255,8 @@ pub fn main() anyerror!void {
     // Create the server
     const server_fd = try createServer(options.options.port);
 
+    logger.info("server fd is {}", .{server_fd});
+
     // Create the ring
 
     var cqes: [max_ring_entries]io_uring_cqe = undefined;
@@ -312,6 +314,15 @@ pub fn main() anyerror!void {
                         logger.warn("no free connection available", .{});
 
                         // Enqueue a new accept request.
+                        accept_completion = .{
+                            .ring = &ring,
+                            .operation = .{
+                                .accept = .{
+                                    .socket = server_fd,
+                                    .addr = undefined,
+                                },
+                            },
+                        };
                         try accept_completion.prep();
 
                         continue;
@@ -329,7 +340,17 @@ pub fn main() anyerror!void {
                     try connection.prep_timeout(&ring, delay * std.time.ns_per_ms);
                     // Enqueue a new recv request for the banner
                     try connection.prep_recv(&ring);
-                    // Enqueue a new accept request.
+
+                    // Reset and enqueue a new accept request.
+                    accept_completion = .{
+                        .ring = &ring,
+                        .operation = .{
+                            .accept = .{
+                                .socket = server_fd,
+                                .addr = undefined,
+                            },
+                        },
+                    };
                     try accept_completion.prep();
                 },
                 .recv => |*op| {
@@ -343,7 +364,7 @@ pub fn main() anyerror!void {
                                 connection.addr.getPort(),
                                 op.socket,
                             }),
-                            os.ECONNRESET => logger.info("RECV host={} port={} fd={} reset by peer pipe", .{
+                            os.ECONNRESET => logger.info("RECV host={} port={} fd={} reset by peer", .{
                                 connection.addr,
                                 connection.addr.getPort(),
                                 op.socket,
@@ -387,7 +408,7 @@ pub fn main() anyerror!void {
                                 connection.addr.getPort(),
                                 op.socket,
                             }),
-                            os.ECONNRESET => logger.info("SEND host={} port={} fd={} reset by peer pipe", .{
+                            os.ECONNRESET => logger.info("SEND host={} port={} fd={} reset by peer", .{
                                 connection.addr,
                                 connection.addr.getPort(),
                                 op.socket,
