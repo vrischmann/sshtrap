@@ -221,6 +221,8 @@ pub fn main() anyerror!void {
         delay: i64 = 10000,
         @"max-connections": usize = 1024,
 
+        @"debug-iterations": ?usize = null,
+
         pub const shorthands = .{
             .p = "port",
             .d = "delay",
@@ -279,14 +281,19 @@ pub fn main() anyerror!void {
     };
     try accept_completion.prep();
 
-    while (true) {
+    var i: usize = 0;
+    loop: while (true) : (i += 1) {
+        if (options.options.@"debug-iterations") |iter| {
+            if (i >= iter) break :loop;
+        }
+
         // Process CQEs
 
         const count = try ring.copy_cqes(cqes[0..], 0);
-        var i: usize = 0;
+        var j: usize = 0;
 
-        while (i < count) : (i += 1) {
-            const cqe = cqes[i];
+        while (j < count) : (j += 1) {
+            const cqe = cqes[j];
 
             const completion = @intToPtr(*Completion, cqe.user_data);
             switch (completion.operation) {
