@@ -127,7 +127,7 @@ const Connection = struct {
             .operation = .{
                 .recv = .{
                     .socket = self.socket,
-                    .buffer = self.buffer,
+                    .buffer = self.buffer[0..128],
                 },
             },
         };
