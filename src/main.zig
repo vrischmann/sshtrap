@@ -421,12 +421,14 @@ pub fn main() anyerror!void {
                             }),
                         }
                         connection.state = .terminating;
+
+                        // Enqueue a close request
+                        try connection.prep_close(&ring);
                     } else {
                         connection.statistics.bytes_sent += @intCast(usize, cqe.res);
+                        // Enqueue a timeout request for the next write.
+                        try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
                     }
-
-                    // Enqueue a timeout request for the next write.
-                    try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
                 },
                 .close => |*op| {
                     var connection = @fieldParentPtr(Connection, "send_completion", completion);
@@ -459,13 +461,8 @@ pub fn main() anyerror!void {
                         );
                     };
 
-                    if (connection.state == .terminating) {
-                        // Enqueue a close request
-                        try connection.prep_close(&ring);
-                    } else {
-                        // Enqueue a send request
-                        try connection.prep_send(&ring, banner);
-                    }
+                    // Enqueue a send request
+                    try connection.prep_send(&ring, banner);
                 },
             }
         }
