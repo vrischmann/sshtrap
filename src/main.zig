@@ -302,8 +302,6 @@ pub fn main() anyerror!void {
                         os.exit(1);
                     }
 
-                    const now2 = time.milliTimestamp();
-
                     // Get a connection object and initialize all state.
                     //
                     // If no connection is free we don't do anything.
