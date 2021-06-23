@@ -418,12 +418,6 @@ pub fn main() anyerror!void {
                         connection.state = .terminating;
                     } else {
                         connection.statistics.bytes_sent += @intCast(usize, cqe.res);
-
-                        logger.info("SEND host={} fd={} data={s}", .{
-                            connection.addr,
-                            op.socket,
-                            fmt.fmtIntSizeBin(@intCast(u64, cqe.res)),
-                        });
                     }
 
                     // Enqueue a timeout request for the next write.
