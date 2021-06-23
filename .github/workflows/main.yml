@@ -21,7 +21,7 @@ jobs:
           version: master
       - run: zig fmt --check *.zig src/*.zig
 
-  test-in-memory:
+  build:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
