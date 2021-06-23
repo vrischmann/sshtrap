@@ -1,14 +1,8 @@
 name: CI
 
 on:
-  push:
-    paths:
-    - '**.zig'
-    - 'src/**.zig'
-  pull_request:
-    paths:
-    - '**.zig'
-    - 'src/**.zig'
+  push: {}
+  pull_request: {}
   schedule:
     - cron: "0 13 * * *"
   workflow_dispatch:
