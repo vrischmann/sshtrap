@@ -23,10 +23,10 @@ const Completion = struct {
     operation: Operation,
 
     fn prep(self: *Self) !void {
-        logger.debug("prep {s} user data={d}", .{
-            fmt.fmtSliceEscapeUpper(@tagName(self.operation)),
-            @ptrToInt(self),
-        });
+        // logger.debug("prep {s} user data={d}", .{
+        //     fmt.fmtSliceEscapeUpper(@tagName(self.operation)),
+        //     @ptrToInt(self),
+        // });
 
         switch (self.operation) {
             .accept => |*op| {
