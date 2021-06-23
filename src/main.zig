@@ -8,6 +8,8 @@ const net = std.net;
 const os = std.os;
 const time = std.time;
 
+const assert = debug.assert;
+
 const IO_Uring = std.os.linux.IO_Uring;
 const io_uring_cqe = std.os.linux.io_uring_cqe;
 
@@ -68,6 +70,13 @@ const Completion = struct {
                     0,
                 );
             },
+            .timeout_remove => {
+                _ = try self.ring.timeout_remove(
+                    @ptrToInt(self),
+                    0,
+                    0,
+                );
+            },
         }
     }
 };
@@ -92,6 +101,7 @@ const Operation = union(enum) {
     timeout: struct {
         timespec: os.__kernel_timespec,
     },
+    timeout_remove: struct {},
 };
 
 const Connection = struct {
@@ -169,6 +179,16 @@ const Connection = struct {
                         .tv_nsec = timeout,
                     },
                 },
+            },
+        };
+        try self.timeout_completion.prep();
+    }
+
+    fn prep_remove_timeout(self: *Self, ring: *IO_Uring) !void {
+        self.timeout_completion = .{
+            .ring = ring,
+            .operation = .{
+                .timeout_remove = .{},
             },
         };
         try self.timeout_completion.prep();
@@ -361,6 +381,8 @@ pub fn main() anyerror!void {
                 .recv => |*op| {
                     var connection = @fieldParentPtr(Connection, "recv_completion", completion);
 
+                    assert(connection.state == .connected);
+
                     // handle errors
                     if (cqe.res <= 0) {
                         switch (-cqe.res) {
@@ -383,6 +405,9 @@ pub fn main() anyerror!void {
                             }),
                         }
                         connection.state = .terminating;
+
+                        // Remove the timeout
+                        try connection.prep_remove_timeout(&ring);
                     } else {
                         const size = @intCast(usize, cqe.res);
                         const data = connection.buffer[0..size];
@@ -398,6 +423,8 @@ pub fn main() anyerror!void {
                 },
                 .send => |*op| {
                     var connection = @fieldParentPtr(Connection, "send_completion", completion);
+
+                    assert(connection.state == .connected);
 
                     // handle errors
                     if (cqe.res <= 0) {
@@ -433,6 +460,8 @@ pub fn main() anyerror!void {
                 .close => |*op| {
                     var connection = @fieldParentPtr(Connection, "send_completion", completion);
 
+                    assert(connection.state == .terminating);
+
                     const elapsed = time.milliTimestamp() - connection.statistics.connect_time;
 
                     logger.info("CLOSE host={} fd={} total sent={s} elapsed={s}", .{
@@ -450,6 +479,13 @@ pub fn main() anyerror!void {
                 .timeout => {
                     const connection = @fieldParentPtr(Connection, "timeout_completion", completion);
 
+                    assert(connection.state == .connected);
+
+                    logger.debug("TIMEOUT host={} fd={}", .{
+                        connection.addr,
+                        connection.socket,
+                    });
+
                     const banner = blk: {
                         var banner_buffer: [4]u8 = undefined;
                         rng.random.bytes(&banner_buffer);
@@ -463,6 +499,16 @@ pub fn main() anyerror!void {
 
                     // Enqueue a send request
                     try connection.prep_send(&ring, banner);
+                },
+                .timeout_remove => {
+                    const connection = @fieldParentPtr(Connection, "timeout_completion", completion);
+
+                    assert(connection.state == .terminating);
+
+                    logger.debug("TIMEOUT REMOVED host={} fd={}", .{
+                        connection.addr,
+                        connection.socket,
+                    });
                 },
             }
         }
