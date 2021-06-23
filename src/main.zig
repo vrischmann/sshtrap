@@ -1,5 +1,6 @@
 const std = @import("std");
 const debug = std.debug;
+const fmt = std.fmt;
 const heap = std.heap;
 const io = std.io;
 const mem = std.mem;
@@ -7,24 +8,174 @@ const net = std.net;
 const os = std.os;
 const time = std.time;
 
-const max_clients = 4096;
-const delay = 10000;
-const port = 22;
+const IO_Uring = std.os.linux.IO_Uring;
+const io_uring_cqe = std.os.linux.io_uring_cqe;
 
-const Session = struct {
-    addr: net.Address,
-    socket: os.socket_t,
-    socket_writer: SocketWriter,
+const argsParser = @import("args");
 
-    statistics: struct {
-        connect_time: i64,
-        bytes_sent: usize,
-    },
+const max_ring_entries = 512;
+const max_buffer_size = 4096;
 
-    send_next: i64,
+const Completion = struct {
+    const Self = @This();
+
+    ring: *IO_Uring,
+    operation: Operation,
+
+    fn prep(self: *Self) !void {
+        // logger.debug("prep {s} user data={d}", .{
+        //     fmt.fmtSliceEscapeUpper(@tagName(self.operation)),
+        //     @ptrToInt(self),
+        // });
+
+        switch (self.operation) {
+            .accept => |*op| {
+                _ = try self.ring.accept(
+                    @ptrToInt(self),
+                    op.socket,
+                    &op.addr,
+                    &op.addr_len,
+                    0,
+                );
+            },
+            .recv => |*op| {
+                _ = try self.ring.recv(
+                    @ptrToInt(self),
+                    op.socket,
+                    op.buffer,
+                    0,
+                );
+            },
+            .send => |*op| {
+                _ = try self.ring.send(
+                    @ptrToInt(self),
+                    op.socket,
+                    op.buffer,
+                    0,
+                );
+            },
+            .close => |*op| {
+                _ = try self.ring.close(
+                    @ptrToInt(self),
+                    op.socket,
+                );
+            },
+            .timeout => |*op| {
+                _ = try self.ring.timeout(
+                    @ptrToInt(self),
+                    &op.timespec,
+                    0,
+                    0,
+                );
+            },
+        }
+    }
 };
 
-fn createServer() !os.socket_t {
+const Operation = union(enum) {
+    accept: struct {
+        socket: os.socket_t,
+        addr: os.sockaddr,
+        addr_len: os.socklen_t = @sizeOf(os.sockaddr),
+    },
+    recv: struct {
+        socket: os.socket_t,
+        buffer: []u8,
+    },
+    send: struct {
+        socket: os.socket_t,
+        buffer: []const u8,
+    },
+    close: struct {
+        socket: os.socket_t,
+    },
+    timeout: struct {
+        timespec: os.__kernel_timespec,
+    },
+};
+
+const Connection = struct {
+    const Self = @This();
+
+    state: enum {
+        free,
+        connected,
+        terminating,
+    } = .free,
+
+    recv_completion: Completion = undefined,
+    send_completion: Completion = undefined,
+    timeout_completion: Completion = undefined,
+
+    addr: net.Address = net.Address{
+        .any = .{
+            .family = os.AF_INET,
+            .data = [_]u8{0} ** 14,
+        },
+    },
+    socket: os.socket_t = -1,
+    buffer: []u8 = undefined,
+
+    statistics: struct {
+        connect_time: i64 = 0,
+        bytes_sent: usize = 0,
+    } = .{},
+
+    fn prep_recv(self: *Self, ring: *IO_Uring) !void {
+        self.recv_completion = .{
+            .ring = ring,
+            .operation = .{
+                .recv = .{
+                    .socket = self.socket,
+                    .buffer = self.buffer,
+                },
+            },
+        };
+        try self.recv_completion.prep();
+    }
+
+    fn prep_send(self: *Self, ring: *IO_Uring, buffer: []const u8) !void {
+        self.send_completion = .{
+            .ring = ring,
+            .operation = .{
+                .send = .{
+                    .socket = self.socket,
+                    .buffer = buffer,
+                },
+            },
+        };
+        try self.send_completion.prep();
+    }
+
+    fn prep_close(self: *Self, ring: *IO_Uring) !void {
+        self.send_completion = .{
+            .ring = ring,
+            .operation = .{
+                .close = .{
+                    .socket = self.socket,
+                },
+            },
+        };
+        try self.send_completion.prep();
+    }
+
+    fn prep_timeout(self: *Self, ring: *IO_Uring, timeout: i64) !void {
+        self.timeout_completion = .{
+            .ring = ring,
+            .operation = .{
+                .timeout = .{
+                    .timespec = .{
+                        .tv_sec = 0,
+                        .tv_nsec = timeout,
+                    },
+                },
+            },
+        };
+        try self.timeout_completion.prep();
+    }
+};
+
+fn createServer(port: u16) !os.socket_t {
     const sockfd = try os.socket(os.AF_INET6, os.SOCK_STREAM, 0);
     errdefer os.close(sockfd);
 
@@ -52,15 +203,6 @@ fn createServer() !os.socket_t {
     return sockfd;
 }
 
-fn socketWrite(fd: os.socket_t, bytes: []const u8) os.WriteError!usize {
-    const rc = os.linux.write(fd, bytes.ptr, bytes.len);
-    return switch (os.errno(rc)) {
-        0 => @intCast(usize, rc),
-        else => error.BrokenPipe,
-    };
-}
-const SocketWriter = io.Writer(os.socket_t, os.WriteError, socketWrite);
-
 const logger = std.log.scoped(.main);
 
 pub fn main() anyerror!void {
@@ -73,10 +215,33 @@ pub fn main() anyerror!void {
     defer arena.deinit();
     var allocator = &arena.allocator;
 
-    var sessions = std.ArrayList(Session).init(allocator);
+    // Parse options
+    const options = try argsParser.parseForCurrentProcess(struct {
+        port: u16 = 22,
+        delay: i64 = 10000,
+        @"max-connections": usize = 1024,
+
+        pub const shorthands = .{
+            .p = "port",
+            .d = "delay",
+            .c = "max-connections",
+        };
+    }, allocator, .print);
+    defer options.deinit();
+
+    if (options.options.port <= 0) {
+        logger.err("invalid port {d}", .{options.options.port});
+        return error.InvalidPort;
+    }
+
+    // Prepare state
+    var connections = try allocator.alloc(Connection, options.options.@"max-connections");
+    mem.set(Connection, connections, .{});
+    for (connections) |*connection| {
+        connection.buffer = try allocator.alloc(u8, max_buffer_size);
+    }
 
     // Create a PRNG
-
     var rng = std.rand.DefaultPrng.init(@intCast(u64, time.milliTimestamp()));
 
     // Ignore broken pipes
@@ -90,118 +255,224 @@ pub fn main() anyerror!void {
     os.sigaction(os.SIGPIPE, &act, null);
 
     // Create the server
-    const server_sockfd = try createServer();
+    const server_fd = try createServer(options.options.port);
+
+    logger.info("server fd is {}", .{server_fd});
+
+    // Create the ring
+
+    var cqes: [max_ring_entries]io_uring_cqe = undefined;
+
+    var ring = try std.os.linux.IO_Uring.init(max_ring_entries, 0);
+    defer ring.deinit();
 
     // Accept connections indefinitely
+
+    var accept_completion: Completion = .{
+        .ring = &ring,
+        .operation = .{
+            .accept = .{
+                .socket = server_fd,
+                .addr = undefined,
+            },
+        },
+    };
+    try accept_completion.prep();
+
     while (true) {
-        // Write random data for sessions that are due for another message.
-        const now = time.milliTimestamp();
+        const now = std.time.milliTimestamp();
 
+        // Process CQEs
+
+        const count = try ring.copy_cqes(cqes[0..], 0);
         var i: usize = 0;
-        while (i < sessions.items.len) : (i += 1) {
-            var session = &sessions.items[i];
-            if (session.send_next > now) continue;
 
-            // Create random message
-            var message_buffer: [32]u8 = undefined;
-            rng.random.bytes(&message_buffer);
+        while (i < count) : (i += 1) {
+            const cqe = cqes[i];
 
-            session.socket_writer.print("{s}", .{std.fmt.fmtSliceHexLower(&message_buffer)}) catch |err| {
-                logger.info("CLOSE host={} port={} fd={} elapsed={d:.3} bytes={} error={}", .{
-                    session.addr,
-                    session.addr.getPort(),
-                    session.socket,
-                    @intToFloat(f32, now - session.statistics.connect_time) / 1e3,
-                    session.statistics.bytes_sent,
-                    err,
-                });
+            const completion = @intToPtr(*Completion, cqe.user_data);
+            switch (completion.operation) {
+                .accept => |*op| {
+                    if (cqe.res < 0) {
+                        switch (-cqe.res) {
+                            os.EPIPE => std.debug.print("EPIPE {}\n", .{cqe}),
+                            os.ECONNRESET => std.debug.print("ECONNRESET {}\n", .{cqe}),
+                            else => std.debug.print("ERROR {}\n", .{cqe}),
+                        }
+                        os.exit(1);
+                    }
 
-                // Remove the current session
-                _ = sessions.orderedRemove(i);
-                if (i > 0) i -= 1;
+                    const now2 = time.milliTimestamp();
 
-                continue;
-            };
+                    // Get a connection object and initialize all state.
+                    //
+                    // If no connection is free we don't do anything.
+                    var connection = for (connections) |*conn| {
+                        if (conn.state == .free) {
+                            conn.state = .connected;
+                            break conn;
+                        }
+                    } else {
+                        logger.warn("no free connection available", .{});
 
-            session.send_next = now + delay;
-            session.statistics.bytes_sent += message_buffer.len;
-        }
+                        // Enqueue a new accept request.
+                        accept_completion = .{
+                            .ring = &ring,
+                            .operation = .{
+                                .accept = .{
+                                    .socket = server_fd,
+                                    .addr = undefined,
+                                },
+                            },
+                        };
+                        try accept_completion.prep();
 
-        // Compute the earliest timeout
-        const timeout: i32 = blk: {
-            if (sessions.items.len <= 0) break :blk -1;
+                        continue;
+                    };
+                    connection.addr = net.Address{ .any = op.addr };
+                    connection.socket = @intCast(os.socket_t, cqe.res);
+                    connection.statistics.connect_time = time.milliTimestamp();
 
-            var earliest_timeout: i32 = std.math.maxInt(i32);
-            for (sessions.items) |session| {
-                earliest_timeout = std.math.min(
-                    earliest_timeout,
-                    @intCast(i32, session.send_next - now),
-                );
-            }
-            break :blk earliest_timeout;
-        };
+                    logger.info("ACCEPT fd={} host={}", .{
+                        connection.socket,
+                        connection.addr,
+                    });
 
-        // Wait for next event
+                    // Enqueue a timeout request for the first write.
+                    try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
+                    // Enqueue a new recv request for the banner
+                    try connection.prep_recv(&ring);
 
-        var fds = [_]os.pollfd{.{
-            .fd = server_sockfd,
-            .events = os.POLLIN,
-            .revents = 0,
-        }};
-
-        const events = if (sessions.items.len < max_clients)
-            try os.poll(&fds, timeout)
-        else
-            try os.poll(&[_]os.pollfd{}, timeout);
-        if (events < 1) {
-            // No event, retry
-            continue;
-        }
-
-        var fd = &fds[0];
-        if (fd.revents & os.POLLIN == os.POLLIN) {
-            var client_addr: net.Address = undefined;
-            var client_addr_len: os.socklen_t = @sizeOf(net.Address);
-
-            const client_fd = try os.accept(
-                server_sockfd,
-                &client_addr.any,
-                &client_addr_len,
-                os.SOCK_NONBLOCK,
-            );
-
-            logger.info("ACCEPT host={} port={} fd={} n={}/{}", .{
-                client_addr,
-                client_addr.getPort(),
-                client_fd,
-                sessions.items.len + 1,
-                max_clients,
-            });
-
-            const now2 = time.milliTimestamp();
-
-            // Set the smallest possible receive buffer.
-            try os.setsockopt(
-                client_fd,
-                os.SOL_SOCKET,
-                os.SO_RCVBUF,
-                &mem.toBytes(@as(c_int, 1)),
-            );
-
-            var socket_writer = .{ .context = client_fd };
-            var session = Session{
-                .addr = client_addr,
-                .socket = client_fd,
-                .socket_writer = socket_writer,
-
-                .statistics = .{
-                    .connect_time = now2,
-                    .bytes_sent = 0,
+                    // Reset and enqueue a new accept request.
+                    accept_completion = .{
+                        .ring = &ring,
+                        .operation = .{
+                            .accept = .{
+                                .socket = server_fd,
+                                .addr = undefined,
+                            },
+                        },
+                    };
+                    try accept_completion.prep();
                 },
+                .recv => |*op| {
+                    var connection = @fieldParentPtr(Connection, "recv_completion", completion);
 
-                .send_next = now2 + delay,
-            };
-            try sessions.append(session);
+                    // handle errors
+                    if (cqe.res <= 0) {
+                        switch (-cqe.res) {
+                            os.EPIPE => logger.info("RECV host={} fd={} broken pipe", .{
+                                connection.addr,
+                                op.socket,
+                            }),
+                            os.ECONNRESET => logger.info("RECV host={} fd={} reset by peer", .{
+                                connection.addr,
+                                op.socket,
+                            }),
+                            0 => logger.info("RECV host={} fd={} end of file", .{
+                                connection.addr,
+                                op.socket,
+                            }),
+                            else => logger.warn("RECV host={} fd={} errno {d}", .{
+                                connection.addr,
+                                op.socket,
+                                cqe.res,
+                            }),
+                        }
+                        connection.state = .terminating;
+                    } else {
+                        const size = @intCast(usize, cqe.res);
+                        const data = connection.buffer[0..size];
+
+                        logger.info("RECV host={} fd={} data={s}/{s} ({s})", .{
+                            connection.addr,
+                            connection.socket,
+                            fmt.fmtSliceHexLower(data),
+                            fmt.fmtSliceEscapeLower(data),
+                            fmt.fmtIntSizeBin(data.len),
+                        });
+                    }
+                },
+                .send => |*op| {
+                    var connection = @fieldParentPtr(Connection, "send_completion", completion);
+
+                    // handle errors
+                    if (cqe.res <= 0) {
+                        switch (-cqe.res) {
+                            os.EPIPE => logger.info("SEND host={} fd={} broken pipe", .{
+                                connection.addr,
+                                op.socket,
+                            }),
+                            os.ECONNRESET => logger.info("SEND host={} fd={} reset by peer", .{
+                                connection.addr,
+                                op.socket,
+                            }),
+                            0 => logger.info("SEND host={} fd={} end of file", .{
+                                connection.addr,
+                                op.socket,
+                            }),
+                            else => logger.warn("SEND host={} fd={} errno {d}", .{
+                                connection.addr,
+                                op.socket,
+                                cqe.res,
+                            }),
+                        }
+                        connection.state = .terminating;
+                    } else {
+                        connection.statistics.bytes_sent += @intCast(usize, cqe.res);
+
+                        logger.info("SEND host={} fd={} data={s}", .{
+                            connection.addr,
+                            op.socket,
+                            fmt.fmtIntSizeBin(@intCast(u64, cqe.res)),
+                        });
+                    }
+
+                    // Enqueue a timeout request for the next write.
+                    try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
+                },
+                .close => |*op| {
+                    var connection = @fieldParentPtr(Connection, "send_completion", completion);
+
+                    const elapsed = time.milliTimestamp() - connection.statistics.connect_time;
+
+                    logger.info("CLOSE host={} fd={} total sent={s} elapsed={s}", .{
+                        connection.addr,
+                        op.socket,
+                        fmt.fmtIntSizeBin(@intCast(u64, connection.statistics.bytes_sent)),
+                        fmt.fmtDuration(@intCast(u64, elapsed * time.ns_per_ms)),
+                    });
+
+                    // TODO(vincent): refactor into a struct ?
+                    const buffer = connection.buffer;
+                    connection.* = .{};
+                    connection.buffer = buffer;
+                },
+                .timeout => {
+                    const connection = @fieldParentPtr(Connection, "timeout_completion", completion);
+
+                    const banner = blk: {
+                        var banner_buffer: [4]u8 = undefined;
+                        rng.random.bytes(&banner_buffer);
+
+                        break :blk try fmt.bufPrint(
+                            connection.buffer,
+                            "{s}",
+                            .{fmt.fmtSliceHexLower(&banner_buffer)},
+                        );
+                    };
+
+                    if (connection.state == .terminating) {
+                        // Enqueue a close request
+                        try connection.prep_close(&ring);
+                    } else {
+                        // Enqueue a send request
+                        try connection.prep_send(&ring, banner);
+                    }
+                },
+            }
         }
+
+        _ = try ring.submit_and_wait(1);
     }
 }

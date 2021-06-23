@@ -1,4 +1,5 @@
 const std = @import("std");
+const pkgs = @import("gyro").pkgs;
 
 pub fn build(b: *std.build.Builder) void {
     // At the moment we can't control the CPU features using the command line `zig build`
@@ -32,6 +33,9 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("sshtrap", "src/main.zig");
+
+    exe.addPackage(pkgs.args);
+
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();

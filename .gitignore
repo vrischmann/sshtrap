@@ -1,3 +1,7 @@
 /zig-cache
 /sshtrap
 /build_runner.zig
+
+# gyro
+/.gyro
+deps.zig
