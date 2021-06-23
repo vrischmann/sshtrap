@@ -280,8 +280,6 @@ pub fn main() anyerror!void {
     try accept_completion.prep();
 
     while (true) {
-        const now = std.time.milliTimestamp();
-
         // Process CQEs
 
         const count = try ring.copy_cqes(cqes[0..], 0);
