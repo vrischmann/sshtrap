@@ -23,6 +23,10 @@ const Completion = struct {
 
     ring: *IO_Uring,
     operation: Operation,
+    parent: enum {
+        global,
+        connection,
+    } = .global,
 
     fn prep(self: *Self) !void {
         // logger.debug("prep {s} user data={d}", .{
@@ -66,7 +70,7 @@ const Completion = struct {
                 _ = try self.ring.timeout(
                     @ptrToInt(self),
                     &op.timespec,
-                    0,
+                    op.count,
                     0,
                 );
             },
@@ -78,6 +82,35 @@ const Completion = struct {
                 );
             },
         }
+    }
+
+    fn prepAccept(self: *Self, ring: *IO_Uring, socket: os.socket_t) !void {
+        self.* = .{
+            .ring = ring,
+            .operation = .{
+                .accept = .{
+                    .socket = socket,
+                    .addr = undefined,
+                },
+            },
+        };
+        try self.prep();
+    }
+
+    fn prepTimeout(self: *Self, ring: *IO_Uring, timeout: u63) !void {
+        self.* = .{
+            .ring = ring,
+            .operation = .{
+                .timeout = .{
+                    .timespec = .{
+                        .tv_sec = 0,
+                        .tv_nsec = timeout,
+                    },
+                    .count = 0,
+                },
+            },
+        };
+        try self.prep();
     }
 };
 
@@ -100,6 +133,7 @@ const Operation = union(enum) {
     },
     timeout: struct {
         timespec: os.__kernel_timespec,
+        count: u32,
     },
     timeout_remove: struct {},
 };
@@ -141,6 +175,7 @@ const Connection = struct {
                     .buffer = self.buffer[0..128],
                 },
             },
+            .parent = .connection,
         };
         try self.recv_completion.prep();
     }
@@ -154,6 +189,7 @@ const Connection = struct {
                     .buffer = buffer,
                 },
             },
+            .parent = .connection,
         };
         try self.send_completion.prep();
     }
@@ -166,11 +202,12 @@ const Connection = struct {
                     .socket = self.socket,
                 },
             },
+            .parent = .connection,
         };
         try self.close_completion.prep();
     }
 
-    fn prep_timeout(self: *Self, ring: *IO_Uring, timeout: i64) !void {
+    fn prep_timeout(self: *Self, ring: *IO_Uring, timeout: u63) !void {
         self.timeout_completion = .{
             .ring = ring,
             .operation = .{
@@ -179,8 +216,10 @@ const Connection = struct {
                         .tv_sec = 0,
                         .tv_nsec = timeout,
                     },
+                    .count = 0,
                 },
             },
+            .parent = .connection,
         };
         try self.timeout_completion.prep();
     }
@@ -191,6 +230,7 @@ const Connection = struct {
             .operation = .{
                 .timeout_remove = .{},
             },
+            .parent = .connection,
         };
         try self.timeout_completion.prep();
     }
@@ -239,7 +279,7 @@ pub fn main() anyerror!void {
     // Parse options
     const options = try argsParser.parseForCurrentProcess(struct {
         port: u16 = 22,
-        delay: i64 = 10000,
+        delay: u63 = 10000,
         @"max-connections": usize = 1024,
 
         @"debug-iterations": ?usize = null,
@@ -291,17 +331,11 @@ pub fn main() anyerror!void {
     defer ring.deinit();
 
     // Accept connections indefinitely
-
-    var accept_completion: Completion = .{
-        .ring = &ring,
-        .operation = .{
-            .accept = .{
-                .socket = server_fd,
-                .addr = undefined,
-            },
-        },
-    };
-    try accept_completion.prep();
+    var global_accept: struct {
+        completion: Completion = undefined,
+        has_timeout: bool = false,
+    } = .{};
+    try global_accept.completion.prepAccept(&ring, server_fd);
 
     var i: usize = 0;
     loop: while (true) : (i += 1) {
@@ -310,83 +344,71 @@ pub fn main() anyerror!void {
         }
 
         // Process CQEs
-
         const count = try ring.copy_cqes(cqes[0..], 0);
-        var j: usize = 0;
 
-        while (j < count) : (j += 1) {
-            const cqe = cqes[j];
+        for (cqes[0..count]) |cqe| {
+            if (cqe.user_data == 0) {
+                continue;
+            }
 
             const completion = @intToPtr(*Completion, cqe.user_data);
             switch (completion.operation) {
                 .accept => |*op| {
+                    assert(completion.parent == .global);
+
                     if (cqe.res < 0) {
                         switch (-cqe.res) {
-                            os.EPIPE => std.debug.print("EPIPE {}\n", .{cqe}),
-                            os.ECONNRESET => std.debug.print("ECONNRESET {}\n", .{cqe}),
-                            os.EMFILE => logger.warn("too many open files\n", .{}),
+                            os.EPIPE => logger.warn("ACCEPT broken pipe", .{}),
+                            os.ECONNRESET => logger.warn("ACCEPT connection reset by peer", .{}),
+                            os.EMFILE => logger.warn("ACCEPT too many open files", .{}),
                             else => {
                                 logger.err("ERROR {}\n", .{cqe});
                                 os.exit(1);
                             },
                         }
-                        continue;
-                    }
 
-                    // Get a connection object and initialize all state.
-                    //
-                    // If no connection is free we don't do anything.
-                    var connection = for (connections) |*conn| {
-                        if (conn.state == .free) {
-                            conn.state = .connected;
-                            break conn;
+                        if (!global_accept.has_timeout) {
+                            global_accept.has_timeout = true;
+                            try global_accept.completion.prepTimeout(&ring, 1000 * time.ns_per_ms);
                         }
                     } else {
-                        logger.warn("no free connection available", .{});
+                        // Get a connection object and initialize all state.
+                        //
+                        // If no connection is free we don't do anything.
+                        var connection = for (connections) |*conn| {
+                            if (conn.state == .free) {
+                                conn.state = .connected;
+                                break conn;
+                            }
+                        } else {
+                            logger.warn("no free connection available", .{});
 
-                        // Enqueue a new accept request.
-                        accept_completion = .{
-                            .ring = &ring,
-                            .operation = .{
-                                .accept = .{
-                                    .socket = server_fd,
-                                    .addr = undefined,
-                                },
-                            },
+                            // Enqueue a new accept request
+                            try global_accept.completion.prepAccept(&ring, server_fd);
+                            continue;
                         };
-                        try accept_completion.prep();
 
-                        continue;
-                    };
-                    connection.addr = net.Address{ .any = op.addr };
-                    connection.socket = @intCast(os.socket_t, cqe.res);
-                    connection.statistics.connect_time = time.milliTimestamp();
+                        connection.addr = net.Address{ .any = op.addr };
+                        connection.socket = @intCast(os.socket_t, cqe.res);
+                        connection.statistics.connect_time = time.milliTimestamp();
 
-                    logger.info("ACCEPT fd={} host={}", .{
-                        connection.socket,
-                        connection.addr,
-                    });
+                        logger.info("ACCEPT fd={} host={}", .{
+                            connection.socket,
+                            connection.addr,
+                        });
 
-                    // Enqueue a timeout request for the first write.
-                    try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
-                    // Enqueue a new recv request for the banner
-                    try connection.prep_recv(&ring);
-
-                    // Reset and enqueue a new accept request.
-                    accept_completion = .{
-                        .ring = &ring,
-                        .operation = .{
-                            .accept = .{
-                                .socket = server_fd,
-                                .addr = undefined,
-                            },
-                        },
-                    };
-                    try accept_completion.prep();
+                        // Enqueue a timeout request for the first write.
+                        try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
+                        // Enqueue a new recv request for the banner
+                        try connection.prep_recv(&ring);
+                        // Enqueue a new accept request
+                        try global_accept.completion.prepAccept(&ring, server_fd);
+                    }
                 },
                 .recv => |*op| {
-                    var connection = @fieldParentPtr(Connection, "recv_completion", completion);
+                    assert(completion.parent == .connection);
 
+                    var connection = @fieldParentPtr(Connection, "recv_completion", completion);
                     assert(connection.state == .connected);
 
                     // handle errors
@@ -411,12 +433,9 @@ pub fn main() anyerror!void {
                             }),
                         }
                         connection.state = .terminating;
-
-                        // Remove the timeout
-                        try connection.prep_remove_timeout(&ring);
                     } else {
-                        const size = @intCast(usize, cqe.res);
-                        const data = connection.buffer[0..size];
+                        const recv = @intCast(usize, cqe.res);
+                        const data = connection.buffer[0..recv];
 
                         logger.info("RECV host={} fd={} data={s}/{s} ({s})", .{
                             connection.addr,
@@ -428,8 +447,9 @@ pub fn main() anyerror!void {
                     }
                 },
                 .send => |*op| {
-                    var connection = @fieldParentPtr(Connection, "send_completion", completion);
+                    assert(completion.parent == .connection);
 
+                    var connection = @fieldParentPtr(Connection, "send_completion", completion);
                     assert(connection.state == .connected);
 
                     // handle errors
@@ -454,18 +474,25 @@ pub fn main() anyerror!void {
                             }),
                         }
                         connection.state = .terminating;
-
-                        // Enqueue a close request
-                        try connection.prep_close(&ring);
                     } else {
-                        connection.statistics.bytes_sent += @intCast(usize, cqe.res);
-                        // Enqueue a timeout request for the next write.
-                        try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
+                        const sent = @intCast(usize, cqe.res);
+
+                        logger.debug("SENT host={} fd={} ({s})", .{
+                            connection.addr,
+                            connection.socket,
+                            fmt.fmtIntSizeBin(sent),
+                        });
+
+                        connection.statistics.bytes_sent += sent;
                     }
+
+                    // Enqueue a timeout request for the next write.
+                    try connection.prep_timeout(&ring, options.options.delay * std.time.ns_per_ms);
                 },
                 .close => |*op| {
-                    var connection = @fieldParentPtr(Connection, "close_completion", completion);
+                    assert(completion.parent == .connection);
 
+                    var connection = @fieldParentPtr(Connection, "close_completion", completion);
                     assert(connection.state == .terminating);
 
                     const elapsed = time.milliTimestamp() - connection.statistics.connect_time;
@@ -482,33 +509,49 @@ pub fn main() anyerror!void {
                     connection.* = .{};
                     connection.buffer = buffer;
                 },
-                .timeout => {
-                    const connection = @fieldParentPtr(Connection, "timeout_completion", completion);
+                .timeout => switch (completion.parent) {
+                    .global => {
+                        logger.info("ACCEPT REQUEUE TIMEOUT", .{});
 
-                    assert(connection.state == .connected);
+                        try global_accept.completion.prepAccept(&ring, server_fd);
+                        global_accept.has_timeout = false;
+                    },
+                    .connection => {
+                        const connection = @fieldParentPtr(Connection, "timeout_completion", completion);
 
-                    logger.debug("TIMEOUT host={} fd={}", .{
-                        connection.addr,
-                        connection.socket,
-                    });
+                        logger.debug("TIMEOUT host={} fd={} state={s}", .{
+                            connection.addr,
+                            connection.socket,
+                            @tagName(connection.state),
+                        });
 
-                    const banner = blk: {
-                        var banner_buffer: [4]u8 = undefined;
-                        rng.random.bytes(&banner_buffer);
+                        switch (connection.state) {
+                            .terminating => {
+                                // Enqueue a close request
+                                try connection.prep_close(&ring);
+                            },
+                            .connected => {
+                                const banner = blk: {
+                                    var banner_buffer: [4]u8 = undefined;
+                                    rng.random.bytes(&banner_buffer);
 
-                        break :blk try fmt.bufPrint(
-                            connection.buffer,
-                            "{s}",
-                            .{fmt.fmtSliceHexLower(&banner_buffer)},
-                        );
-                    };
-
-                    // Enqueue a send request
-                    try connection.prep_send(&ring, banner);
+                                    break :blk try fmt.bufPrint(
+                                        connection.buffer,
+                                        "{s}",
+                                        .{fmt.fmtSliceHexLower(&banner_buffer)},
+                                    );
+                                };
+                                // Enqueue a send request
+                                try connection.prep_send(&ring, banner);
+                            },
+                            else => debug.panic("invalid state {any}", .{connection.state}),
+                        }
+                    },
                 },
                 .timeout_remove => {
-                    const connection = @fieldParentPtr(Connection, "timeout_completion", completion);
+                    assert(completion.parent == .connection);
 
+                    const connection = @fieldParentPtr(Connection, "timeout_completion", completion);
                     assert(connection.state == .terminating);
 
                     logger.debug("TIMEOUT REMOVED host={} fd={}", .{
