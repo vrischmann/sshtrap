@@ -322,9 +322,13 @@ pub fn main() anyerror!void {
                         switch (-cqe.res) {
                             os.EPIPE => std.debug.print("EPIPE {}\n", .{cqe}),
                             os.ECONNRESET => std.debug.print("ECONNRESET {}\n", .{cqe}),
-                            else => std.debug.print("ERROR {}\n", .{cqe}),
+                            os.EMFILE => logger.warn("too many open files\n", .{}),
+                            else => {
+                                logger.err("ERROR {}\n", .{cqe});
+                                os.exit(1);
+                            },
                         }
-                        os.exit(1);
+                        continue;
                     }
 
                     // Get a connection object and initialize all state.
