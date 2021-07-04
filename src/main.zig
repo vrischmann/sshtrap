@@ -116,6 +116,7 @@ const Connection = struct {
     recv_completion: Completion = undefined,
     send_completion: Completion = undefined,
     timeout_completion: Completion = undefined,
+    close_completion: Completion = undefined,
 
     addr: net.Address = net.Address{
         .any = .{
@@ -158,7 +159,7 @@ const Connection = struct {
     }
 
     fn prep_close(self: *Self, ring: *IO_Uring) !void {
-        self.send_completion = .{
+        self.close_completion = .{
             .ring = ring,
             .operation = .{
                 .close = .{
@@ -166,7 +167,7 @@ const Connection = struct {
                 },
             },
         };
-        try self.send_completion.prep();
+        try self.close_completion.prep();
     }
 
     fn prep_timeout(self: *Self, ring: *IO_Uring, timeout: i64) !void {
@@ -258,9 +259,10 @@ pub fn main() anyerror!void {
 
     // Prepare state
     var connections = try allocator.alloc(Connection, options.options.@"max-connections");
-    mem.set(Connection, connections, .{});
     for (connections) |*connection| {
-        connection.buffer = try allocator.alloc(u8, max_buffer_size);
+        connection.* = .{
+            .buffer = try allocator.alloc(u8, max_buffer_size),
+        };
     }
 
     // Create a PRNG
@@ -462,7 +464,7 @@ pub fn main() anyerror!void {
                     }
                 },
                 .close => |*op| {
-                    var connection = @fieldParentPtr(Connection, "send_completion", completion);
+                    var connection = @fieldParentPtr(Connection, "close_completion", completion);
 
                     assert(connection.state == .terminating);
 
