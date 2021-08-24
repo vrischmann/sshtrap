@@ -357,10 +357,10 @@ pub fn main() anyerror!void {
                     assert(completion.parent == .global);
 
                     if (cqe.res < 0) {
-                        switch (-cqe.res) {
-                            os.EPIPE => logger.warn("ACCEPT broken pipe", .{}),
-                            os.ECONNRESET => logger.warn("ACCEPT connection reset by peer", .{}),
-                            os.EMFILE => logger.warn("ACCEPT too many open files", .{}),
+                        switch (@intToEnum(os.E, -cqe.res)) {
+                            .PIPE => logger.warn("ACCEPT broken pipe", .{}),
+                            .CONNRESET => logger.warn("ACCEPT connection reset by peer", .{}),
+                            .MFILE => logger.warn("ACCEPT too many open files", .{}),
                             else => {
                                 logger.err("ERROR {}\n", .{cqe});
                                 os.exit(1);
@@ -413,24 +413,27 @@ pub fn main() anyerror!void {
 
                     // handle errors
                     if (cqe.res <= 0) {
-                        switch (-cqe.res) {
-                            os.EPIPE => logger.info("RECV host={} fd={} broken pipe", .{
+                        if (cqe.res == 0) {
+                            logger.info("RECV host={} fd={} end of file", .{
                                 connection.addr,
                                 op.socket,
-                            }),
-                            os.ECONNRESET => logger.info("RECV host={} fd={} reset by peer", .{
-                                connection.addr,
-                                op.socket,
-                            }),
-                            0 => logger.info("RECV host={} fd={} end of file", .{
-                                connection.addr,
-                                op.socket,
-                            }),
-                            else => logger.warn("RECV host={} fd={} errno {d}", .{
-                                connection.addr,
-                                op.socket,
-                                cqe.res,
-                            }),
+                            });
+                        } else {
+                            switch (@intToEnum(os.E, -cqe.res)) {
+                                .PIPE => logger.info("RECV host={} fd={} broken pipe", .{
+                                    connection.addr,
+                                    op.socket,
+                                }),
+                                .CONNRESET => logger.info("RECV host={} fd={} reset by peer", .{
+                                    connection.addr,
+                                    op.socket,
+                                }),
+                                else => logger.warn("RECV host={} fd={} errno {d}", .{
+                                    connection.addr,
+                                    op.socket,
+                                    cqe.res,
+                                }),
+                            }
                         }
                         connection.state = .terminating;
                     } else {
@@ -454,24 +457,27 @@ pub fn main() anyerror!void {
 
                     // handle errors
                     if (cqe.res <= 0) {
-                        switch (-cqe.res) {
-                            os.EPIPE => logger.info("SEND host={} fd={} broken pipe", .{
+                        if (cqe.res == 0) {
+                            logger.info("SEND host={} fd={} end of file", .{
                                 connection.addr,
                                 op.socket,
-                            }),
-                            os.ECONNRESET => logger.info("SEND host={} fd={} reset by peer", .{
-                                connection.addr,
-                                op.socket,
-                            }),
-                            0 => logger.info("SEND host={} fd={} end of file", .{
-                                connection.addr,
-                                op.socket,
-                            }),
-                            else => logger.warn("SEND host={} fd={} errno {d}", .{
-                                connection.addr,
-                                op.socket,
-                                cqe.res,
-                            }),
+                            });
+                        } else {
+                            switch (@intToEnum(os.E, -cqe.res)) {
+                                .PIPE => logger.info("SEND host={} fd={} broken pipe", .{
+                                    connection.addr,
+                                    op.socket,
+                                }),
+                                .CONNRESET => logger.info("SEND host={} fd={} reset by peer", .{
+                                    connection.addr,
+                                    op.socket,
+                                }),
+                                else => logger.warn("SEND host={} fd={} errno {d}", .{
+                                    connection.addr,
+                                    op.socket,
+                                    cqe.res,
+                                }),
+                            }
                         }
                         connection.state = .terminating;
                     } else {
