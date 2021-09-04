@@ -132,7 +132,7 @@ const Operation = union(enum) {
         socket: os.socket_t,
     },
     timeout: struct {
-        timespec: os.__kernel_timespec,
+        timespec: os.linux.kernel_timespec,
         count: u32,
     },
     timeout_remove: struct {},
@@ -154,7 +154,7 @@ const Connection = struct {
 
     addr: net.Address = net.Address{
         .any = .{
-            .family = os.AF_INET,
+            .family = os.AF.INET,
             .data = [_]u8{0} ** 14,
         },
     },
@@ -237,28 +237,28 @@ const Connection = struct {
 };
 
 fn createServer(port: u16) !os.socket_t {
-    const sockfd = try os.socket(os.AF_INET6, os.SOCK_STREAM, 0);
+    const sockfd = try os.socket(os.AF.INET6, os.SOCK.STREAM, 0);
     errdefer os.close(sockfd);
 
     // Enable reuseaddr if possible
     os.setsockopt(
         sockfd,
-        os.SOL_SOCKET,
-        os.SO_REUSEADDR,
+        os.SOL.SOCKET,
+        os.SO.REUSEADDR,
         &mem.toBytes(@as(c_int, 1)),
     ) catch {};
 
     // Disable IPv6 only
     try os.setsockopt(
         sockfd,
-        os.IPPROTO_IPV6,
-        os.linux.IPV6_V6ONLY,
+        os.IPPROTO.IPV6,
+        os.linux.IPV6.V6ONLY,
         &mem.toBytes(@as(c_int, 0)),
     );
 
     const addr = try net.Address.parseIp6("::0", port);
 
-    try os.bind(sockfd, &addr.any, @sizeOf(os.sockaddr_in6));
+    try os.bind(sockfd, &addr.any, @sizeOf(os.linux.sockaddr.in6));
     try os.listen(sockfd, std.math.maxInt(u31));
 
     return sockfd;
@@ -311,12 +311,12 @@ pub fn main() anyerror!void {
     // Ignore broken pipes
     var act = os.Sigaction{
         .handler = .{
-            .sigaction = os.SIG_IGN,
+            .sigaction = os.SIG.IGN,
         },
         .mask = os.empty_sigset,
         .flags = 0,
     };
-    os.sigaction(os.SIGPIPE, &act, null);
+    os.sigaction(os.SIG.PIPE, &act, null);
 
     // Create the server
     const server_fd = try createServer(options.options.port);
