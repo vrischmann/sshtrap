@@ -306,7 +306,7 @@ pub fn main() anyerror!void {
     }
 
     // Create a PRNG
-    var rng = std.rand.DefaultPrng.init(@intCast(u64, time.milliTimestamp()));
+    var rng = std.rand.DefaultPrng.init(@intCast(u64, time.milliTimestamp())).random();
 
     // Ignore broken pipes
     var act = os.Sigaction{
@@ -539,7 +539,7 @@ pub fn main() anyerror!void {
                             .connected => {
                                 const banner = blk: {
                                     var banner_buffer: [4]u8 = undefined;
-                                    rng.random.bytes(&banner_buffer);
+                                    rng.bytes(&banner_buffer);
 
                                     break :blk try fmt.bufPrint(
                                         connection.buffer,
