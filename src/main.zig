@@ -272,9 +272,9 @@ pub fn main() anyerror!void {
         debug.panic("leaks detected", .{});
     };
 
-    var arena = heap.ArenaAllocator.init(&gpa.allocator);
+    var arena = heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
-    var allocator = &arena.allocator;
+    var allocator = arena.allocator();
 
     // Parse options
     const options = try argsParser.parseForCurrentProcess(struct {
