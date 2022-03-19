@@ -316,7 +316,7 @@ pub fn main() anyerror!void {
         .mask = os.empty_sigset,
         .flags = 0,
     };
-    os.sigaction(os.SIG.PIPE, &act, null);
+    try os.sigaction(os.SIG.PIPE, &act, null);
 
     // Create the server
     const server_fd = try createServer(options.options.port);
