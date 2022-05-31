@@ -48,7 +48,7 @@ const Completion = struct {
                 _ = try self.ring.recv(
                     @ptrToInt(self),
                     op.socket,
-                    op.buffer,
+                    .{ .buffer = op.buffer },
                     0,
                 );
             },
