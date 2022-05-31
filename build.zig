@@ -33,7 +33,7 @@ pub fn build(b: *std.build.Builder) void {
 
     const exe = b.addExecutable("sshtrap", "src/main.zig");
 
-    exe.addPackage(.{ .name = "args", .path = .{ .path = "third_party/zig-args/args.zig" } });
+    exe.addPackage(.{ .name = "args", .source = .{ .path = "third_party/zig-args/args.zig" } });
 
     exe.setTarget(target);
     exe.setBuildMode(mode);
