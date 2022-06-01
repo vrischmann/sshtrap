@@ -1,0 +1,6 @@
+Source: sshtrap
+Maintainer: Vincent Rischmann <vincent@rischmann.fr>
+
+Package: sshtrap
+Architecture: any
+Description: SSH Trap
