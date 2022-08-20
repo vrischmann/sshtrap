@@ -312,7 +312,7 @@ pub fn main() anyerror!void {
     // Ignore broken pipes
     var act = os.Sigaction{
         .handler = .{
-            .sigaction = os.SIG.IGN,
+            .handler = os.SIG.IGN,
         },
         .mask = os.empty_sigset,
         .flags = 0,
