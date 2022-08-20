@@ -306,7 +306,8 @@ pub fn main() anyerror!void {
     }
 
     // Create a PRNG
-    var rng = std.rand.DefaultPrng.init(@intCast(u64, time.milliTimestamp())).random();
+    var prng = std.rand.DefaultPrng.init(@intCast(u64, time.milliTimestamp()));
+    const rng = prng.random();
 
     // Ignore broken pipes
     var act = os.Sigaction{
